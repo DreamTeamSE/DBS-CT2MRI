@@ -21,7 +21,7 @@ class hist_context_BraTS_Paired_Dataset(Dataset):
         with h5py.File(hdf5_path, "r") as hf:
             A_dataset = np.array(hf.get('target_dataset'))
             B_dataset = np.array(hf.get('source_dataset'))
-            index_dataset = np.array(hf.get('index_dataset')).astype(np.uint8)
+            index_dataset = np.array(hf.get('index_dataset')).astype(np.int64) #  pushed up to int64 from uint8
             subjects = np.array(hf.get("subject"))
 
         hist_type = dataset_config.hist_type
@@ -62,7 +62,7 @@ class BraTS_Paired_Dataset(Dataset):
         with h5py.File(hdf5_path, "r") as hf:
             A_dataset = np.array(hf.get('target_dataset'))
             B_dataset = np.array(hf.get('source_dataset'))
-            index_dataset = np.array(hf.get('index_dataset')).astype(np.uint8)
+            index_dataset = np.array(hf.get('index_dataset')).astype(np.int64)#  pushed up to int64 from uint8
             subjects = np.array(hf.get("subject"))
 
         self.flip = dataset_config.flip if stage == 'train' and self.plane != 'sagittal' else False
@@ -90,7 +90,7 @@ class hist_context_CT2MR_Paired_Dataset(Dataset):
         with h5py.File(hdf5_path, "r") as hf:
             A_dataset = np.array(hf.get('MR_dataset'))
             B_dataset = np.array(hf.get('CT_dataset'))
-            index_dataset = np.array(hf.get('index_dataset')).astype(np.uint8)
+            index_dataset = np.array(hf.get('index_dataset')).astype(np.int64)#  pushed up to int64 from uint8
             subjects = np.array(hf.get("subject"))
         
         hist_type = dataset_config.hist_type
@@ -132,7 +132,7 @@ class CT2MR_Paired_Dataset(Dataset):
         with h5py.File(hdf5_path, "r") as hf:
             A_dataset = np.array(hf.get('MR_dataset'))
             B_dataset = np.array(hf.get('CT_dataset'))
-            index_dataset = np.array(hf.get('index_dataset')).astype(np.uint8)
+            index_dataset = np.array(hf.get('index_dataset')).astype(np.int64)#  pushed up to int64 from uint8
             subjects = np.array(hf.get("subject"))
             
         self.flip = dataset_config.flip if stage == 'train' and self.plane != 'sagittal' else False

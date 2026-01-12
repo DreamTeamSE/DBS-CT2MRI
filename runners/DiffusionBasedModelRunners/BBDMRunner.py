@@ -32,6 +32,11 @@ class BBDMRunner(DiffusionBaseRunner):
         else:
             raise NotImplementedError
         bbdmnet.apply(weights_init)
+
+        # if hasattr(config.model.BB.params.UNetParams, 'use_fp16') and config.model.BB.params.UNetParams.use_fp16:
+        #    print("Converting UNet to fp16 (in Runner)...")
+        #    bbdmnet.denoise_fn.convert_to_fp16()
+
         return bbdmnet
 
     def load_model_from_checkpoint(self):
@@ -178,23 +183,26 @@ class BBDMRunner(DiffusionBaseRunner):
         loss, additional_info = net(x, x_cond, context=context)
         if write:
             self.writer.add_scalar(f'loss/{stage}', loss, step)
-            try:
-                wandb.log({f"loss/{stage}": loss}, step=step)
-            except:
-                print(f'Could not log loss to wandb')
+            if self.config.args.use_wandb: # added due to log fails as before for next few functions
+                try:
+                    wandb.log({f"loss/{stage}": loss}, step=step)
+                except:
+                    print(f'Could not log loss to wandb')
             if additional_info.__contains__('recloss_noise'):
                 self.writer.add_scalar(f'recloss_noise/{stage}', additional_info['recloss_noise'], step)
-                try:
-                    wandb.log({f"recloss_noise/{stage}": additional_info["recloss_noise"]}, step=step)
-                except:
-                    print(f'Could not log recloss_noise to wandb')   
+                if self.config.args.use_wandb:
+                    try:
+                        wandb.log({f"recloss_noise/{stage}": additional_info["recloss_noise"]}, step=step)
+                    except:
+                        print(f'Could not log recloss_noise to wandb')
                         
             if additional_info.__contains__('recloss_xy'):
                 self.writer.add_scalar(f'recloss_xy/{stage}', additional_info['recloss_xy'], step)
-                try:
-                    wandb.log({f"recloss_xy/{stage}": additional_info["recloss_xy"]}, step=step)
-                except:
-                    print(f'Could not log recloss_xy to wandb')
+                if self.config.args.use_wandb:
+                    try:
+                        wandb.log({f"recloss_xy/{stage}": additional_info["recloss_xy"]}, step=step)
+                    except:
+                        print(f'Could not log recloss_xy to wandb')
         return loss
 
     @torch.no_grad()
@@ -220,10 +228,11 @@ class BBDMRunner(DiffusionBaseRunner):
         im.save(os.path.join(sample_path, 'skip_sample.png'))
         if stage != 'test':
             self.writer.add_image(f'{stage}_skip_sample', image_grid, self.global_step, dataformats='HWC')
-            try:
-                wandb.log({f'{stage}_skip_sample': [wandb.Image(image_grid, caption=f'{stage}_skip_sample')]}, step=self.global_step)
-            except:
-                print(f'Could not log {stage}_skip_sample to wandb')
+            if self.config.args.use_wandb:
+                try:
+                    wandb.log({f'{stage}_skip_sample': [wandb.Image(image_grid, caption=f'{stage}_skip_sample')]}, step=self.global_step)
+                except:
+                    print(f'Could not log {stage}_skip_sample to wandb')
             
         image_grid = get_image_grid(x_cond.to('cpu'), grid_size, to_normal=self.config.data.dataset_config.to_normal)
         image_grid = image_grid[:,:,mid_slice_index:mid_slice_index+1]
@@ -231,10 +240,11 @@ class BBDMRunner(DiffusionBaseRunner):
         im.save(os.path.join(sample_path, 'condition.png'))
         if stage != 'test':
             self.writer.add_image(f'{stage}_condition', image_grid, self.global_step, dataformats='HWC')
-            try:
-                wandb.log({f'{stage}_condition': [wandb.Image(image_grid, caption=f'{stage}_condition')]}, step=self.global_step)
-            except:
-                print(f'Could not log {stage}_condition to wandb')
+            if self.config.args.use_wandb:
+                try:
+                    wandb.log({f'{stage}_condition': [wandb.Image(image_grid, caption=f'{stage}_condition')]}, step=self.global_step)
+                except:
+                    print(f'Could not log {stage}_condition to wandb')
                 
         image_grid = get_image_grid(x.to('cpu'), grid_size, to_normal=self.config.data.dataset_config.to_normal)
         image_grid = image_grid[:,:,mid_slice_index:mid_slice_index+1]
@@ -242,10 +252,11 @@ class BBDMRunner(DiffusionBaseRunner):
         im.save(os.path.join(sample_path, 'ground_truth.png'))
         if stage != 'test':
             self.writer.add_image(f'{stage}_ground_truth', image_grid, self.global_step, dataformats='HWC')
-            try:
-                wandb.log({f'{stage}_ground_truth': [wandb.Image(image_grid, caption=f'{stage}_ground_truth')]}, step=self.global_step)
-            except:
-                print(f'Could not log {stage}_ground_truth to wandb')
+            if self.config.args.use_wandb:
+                try:
+                    wandb.log({f'{stage}_ground_truth': [wandb.Image(image_grid, caption=f'{stage}_ground_truth')]}, step=self.global_step)
+                except:
+                    print(f'Could not log {stage}_ground_truth to wandb')
 
     @torch.no_grad()
     def sample_to_eval(self, net, test_dataset, sample_path):

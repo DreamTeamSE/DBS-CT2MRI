@@ -66,6 +66,21 @@ class BaseRunner(ABC):
         # load model from checkpoint
         self.load_model_from_checkpoint()
 
+        # initialize GradScaler for FP16
+        self.use_fp16 = False
+        try:
+            if hasattr(self.config.model, 'BB') and \
+               hasattr(self.config.model.BB, 'params') and \
+               hasattr(self.config.model.BB.params, 'UNetParams') and \
+               hasattr(self.config.model.BB.params.UNetParams, 'use_fp16'):
+                self.use_fp16 = self.config.model.BB.params.UNetParams.use_fp16
+        except Exception:
+            pass
+        
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_fp16)
+        if self.use_fp16:
+            print(f"Gradient Scaling Enabled: {self.use_fp16}")
+
         # initialize DDP
         if self.config.training.use_DDP:
             self.net = DDP(self.net, device_ids=[self.config.training.local_rank], output_device=self.config.training.local_rank)
@@ -191,19 +206,20 @@ class BaseRunner(ABC):
     def validation_step(self, val_batch, epoch, step):
         self.apply_ema()
         self.net.eval()
-        loss = self.loss_fn(net=self.net,
-                            batch=val_batch,
-                            epoch=epoch,
-                            step=step,
-                            opt_idx=0,
-                            stage='val_step')
-        if len(self.optimizer) > 1:
+        with torch.cuda.amp.autocast(enabled=self.use_fp16):
             loss = self.loss_fn(net=self.net,
                                 batch=val_batch,
                                 epoch=epoch,
                                 step=step,
-                                opt_idx=1,
+                                opt_idx=0,
                                 stage='val_step')
+            if len(self.optimizer) > 1:
+                loss = self.loss_fn(net=self.net,
+                                    batch=val_batch,
+                                    epoch=epoch,
+                                    step=step,
+                                    opt_idx=1,
+                                    stage='val_step')
         self.restore_ema()
 
     @torch.no_grad()
@@ -216,37 +232,40 @@ class BaseRunner(ABC):
         loss_sum = 0.
         dloss_sum = 0.
         for val_batch in pbar:
-            loss = self.loss_fn(net=self.net,
-                                batch=val_batch,
-                                epoch=epoch,
-                                step=step,
-                                opt_idx=0,
-                                stage='val',
-                                write=False)
-            loss_sum += loss
-            if len(self.optimizer) > 1:
+            with torch.cuda.amp.autocast(enabled=self.use_fp16):
                 loss = self.loss_fn(net=self.net,
                                     batch=val_batch,
                                     epoch=epoch,
                                     step=step,
-                                    opt_idx=1,
+                                    opt_idx=0,
                                     stage='val',
                                     write=False)
-                dloss_sum += loss
+                loss_sum += loss
+                if len(self.optimizer) > 1:
+                    loss = self.loss_fn(net=self.net,
+                                        batch=val_batch,
+                                        epoch=epoch,
+                                        step=step,
+                                        opt_idx=1,
+                                        stage='val',
+                                        write=False)
+                    dloss_sum += loss
             step += 1
         average_loss = loss_sum / step
         self.writer.add_scalar(f'val_epoch/loss', average_loss, epoch)
-        try:
-            wandb.log({f'val_epoch/loss': average_loss}, step=epoch)
-        except:
-            print('Could not log loss/val_epoch to wandb')
+        if self.config.args.use_wandb:
+            try:
+                wandb.log({f'val_epoch/loss': average_loss}, step=epoch)
+            except:
+                print('Could not log loss/val_epoch to wandb')
         if len(self.optimizer) > 1:
             average_dloss = dloss_sum / step
             self.writer.add_scalar(f'val_dloss_epoch/loss', average_dloss, epoch)
-            try:
-                wandb.log({f'loss/val_dloss_epoch': average_dloss}, step=epoch)
-            except:
-                print('Could not log loss/val_dloss_epoch to wandb')
+            if self.config.args.use_wandb:
+                try:
+                    wandb.log({f'loss/val_dloss_epoch': average_dloss}, step=epoch)
+                except:
+                    print('Could not log loss/val_dloss_epoch to wandb')
 
         self.restore_ema()
         return average_loss
@@ -256,12 +275,13 @@ class BaseRunner(ABC):
         self.apply_ema()
         self.net.eval()
         sample_path = make_dir(os.path.join(self.config.result.image_path, str(self.global_step)))
-        if self.config.training.use_DDP:
-            self.sample(self.net.module, train_batch, sample_path, stage='train')
-            self.sample(self.net.module, val_batch, sample_path, stage='val')
-        else:
-            self.sample(self.net, train_batch, sample_path, stage='train')
-            self.sample(self.net, val_batch, sample_path, stage='val')
+        with torch.cuda.amp.autocast(enabled=self.use_fp16):
+            if self.config.training.use_DDP:
+                self.sample(self.net.module, train_batch, sample_path, stage='train')
+                self.sample(self.net.module, val_batch, sample_path, stage='val')
+            else:
+                self.sample(self.net, train_batch, sample_path, stage='train')
+                self.sample(self.net, val_batch, sample_path, stage='val')
         self.restore_ema()
 
     # abstract methods
@@ -406,16 +426,19 @@ class BaseRunner(ABC):
                     losses = []
                     for i in range(len(self.optimizer)):
                         # pdb.set_trace()
-                        loss = self.loss_fn(net=self.net,
-                                            batch=train_batch,
-                                            epoch=epoch,
-                                            step=self.global_step,
-                                            opt_idx=i,
-                                            stage='train')
+                        with torch.cuda.amp.autocast(enabled=self.use_fp16):
+                            loss = self.loss_fn(net=self.net,
+                                                batch=train_batch,
+                                                epoch=epoch,
+                                                step=self.global_step,
+                                                opt_idx=i,
+                                                stage='train')
 
-                        loss.backward()
+                        self.scaler.scale(loss).backward() #! if issues occur with scaling issues, look here
+                        
                         if self.global_step % accumulate_grad_batches == 0:
-                            self.optimizer[i].step()
+                            self.scaler.step(self.optimizer[i])
+                            self.scaler.update()
                             self.optimizer[i].zero_grad()
                             if self.scheduler is not None:
                                 self.scheduler[i].step(loss)
@@ -555,6 +578,53 @@ class BaseRunner(ABC):
             print('traceback.print_exc():')
             traceback.print_exc()
             print('traceback.format_exc():\n%s' % traceback.format_exc())
+
+        try: 
+            wandb.finish()
+        except:
+            print('Could not finish wandb')
+        
+    @torch.no_grad()
+    def test(self): # added test function
+        test_dataset = get_dataset(self.config.data, test=True)
+        # test_dataset = val_dataset
+        if self.config.training.use_DDP:
+            test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
+            test_loader = DataLoader(test_dataset,
+                                     batch_size=self.config.data.test.batch_size,
+                                     shuffle=False,
+                                     num_workers=1,
+                                     drop_last=True,
+                                     sampler=test_sampler)
+        else:
+            test_loader = DataLoader(test_dataset,
+                                     batch_size=self.config.data.test.batch_size,
+                                     shuffle=False,
+                                     num_workers=1,
+                                     drop_last=False)
+
+        if self.use_ema:
+            self.apply_ema()
+
+        self.net.eval()
+        if self.config.args.sample_to_eval:
+            sample_path = self.config.result.sample_to_eval_path
+            with torch.cuda.amp.autocast(enabled=self.use_fp16):
+                if self.config.training.use_DDP:
+                    self.sample_to_eval(self.net.module, test_loader, sample_path)
+                else:
+                    self.sample_to_eval(self.net, test_dataset, sample_path)
+
+        else:
+            test_iter = iter(test_loader)
+            for i in tqdm(range(1), initial=0, dynamic_ncols=True, smoothing=0.01):
+                test_batch = next(test_iter)
+                sample_path = os.path.join(self.config.result.sample_path, str(i))
+                with torch.cuda.amp.autocast(enabled=self.use_fp16):
+                    if self.config.training.use_DDP:
+                        self.sample(self.net.module, test_batch, sample_path, stage='test')
+                    else:
+                        self.sample(self.net, test_batch, sample_path, stage='test')
 
         try: 
             wandb.finish()

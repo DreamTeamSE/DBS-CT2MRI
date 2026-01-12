@@ -22,11 +22,36 @@ from model.BrownianBridge.base.modules.attention import SpatialTransformer
 
 
 # dummy replace
-def convert_module_to_f16(x):
-    pass
+def convert_module_to_f16(l):
+    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose2d)):
+        l.half()
+        print(f"Converted Conv to Half: {l}")
+    if isinstance(l, (nn.Linear)):
+        l.half()
+        print(f"Converted Linear to Half: {l}")
+    if isinstance(l, (nn.LayerNorm)):
+        l.half()
+        print(f"Converted LayerNorm to Half: {l}")
 
-def convert_module_to_f32(x):
-    pass
+def convert_module_to_f32(l):
+    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose2d)):
+        l.float()
+    if isinstance(l, (nn.Linear)):
+        l.float()
+    if isinstance(l, (nn.LayerNorm)):
+        l.float()
+    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        l.weight.data = l.weight.data.float()
+        if l.bias is not None:
+            l.bias.data = l.bias.data.float()
+    if isinstance(l, (nn.Linear)):
+        l.weight.data = l.weight.data.float()
+        if l.bias is not None:
+            l.bias.data = l.bias.data.float()
+    if isinstance(l, (nn.LayerNorm)):
+        l.weight.data = l.weight.data.float()
+        if l.bias is not None:
+            l.bias.data = l.bias.data.float()
 
 
 ## go
@@ -709,6 +734,9 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
         self.output_blocks.apply(convert_module_to_f16)
+        self.time_embed.apply(convert_module_to_f16)
+        if self.num_classes is not None:
+            self.label_emb.half()
 
     def convert_to_fp32(self):
         """
@@ -717,6 +745,9 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
+        self.time_embed.apply(convert_module_to_f32)
+        if self.num_classes is not None:
+            self.label_emb.float()
 
     def forward(self, x, timesteps=None, context=None, y=None,**kwargs):
         """
@@ -732,6 +763,8 @@ class UNetModel(nn.Module):
         ), "must specify y if and only if the model is class-conditional"
         hs = []
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
+        if self.dtype == th.float16:
+            t_emb = t_emb.half()
         emb = self.time_embed(t_emb)
 
         if self.num_classes is not None:
@@ -743,6 +776,9 @@ class UNetModel(nn.Module):
             context = context['crossattn']
         elif self.condition_key != 'nocond':
             x = th.cat([x, context], dim=1)
+
+        if context is not None and isinstance(context, th.Tensor):
+            context = context.type(self.dtype)
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
